@@ -17,21 +17,19 @@ from PIL import Image, ImageDraw
 
 import torch
 import todos
-from torchvision.transforms import Compose, ToTensor, ToPILImage
+from torchvision.transforms import ToTensor, ToPILImage
 from .mlsd import MobileV2_MLSD_Large
 
 import pdb
 
 
 def draw_lines(tensor, lines):
-    tensor.unsqueeze(0)
     image = ToPILImage()(tensor.squeeze(0))
-
     draw = ImageDraw.Draw(image)
 
     for line in lines:
         x1, y1, x2, y2 = line
-        draw.line(((x1, y1), (x2, y2)), fill="green", width=1)
+        draw.line(((x1, y1), (x2, y2)), fill="red", width=1)
 
     image = ToTensor()(image)
 
@@ -78,11 +76,6 @@ def predict(input_files, output_dir):
 
     # load model
     model, device = get_model()
-    transform = Compose(
-        [
-            ToTensor(),
-        ]
-    )
     image_filenames = todos.data.load_files(input_files)
 
     # start predict
@@ -91,12 +84,11 @@ def predict(input_files, output_dir):
         progress_bar.update(1)
 
         image = Image.open(filename).convert("RGBA")
-        input_image = transform(image).unsqueeze(0).to(device)
+        input_image = ToTensor()(image).unsqueeze(0).to(device)
 
         with torch.no_grad():
             output_lines = model(input_image)
 
-        # output_lines = output_lines[:1]
         output_file = f"{output_dir}/{os.path.basename(filename)}"
 
         output_tensor = draw_lines(input_image, output_lines.cpu())

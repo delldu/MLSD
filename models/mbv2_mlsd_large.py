@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 from  torch.nn import  functional as F
-
+import pdb
 
 class BlockTypeA(nn.Module):
     def __init__(self, in_c1, in_c2, out_c1, out_c2, upscale = True):
@@ -112,7 +112,7 @@ class ConvBNReLU(nn.Sequential):
     def forward(self, x):
         # TFLite uses  different padding
         if self.stride == 2:
-            x = F.pad(x, (0, 1, 0, 1), "constant", 0)
+            x = F.pad(x, (0, 1, 0, 1), "constant", 0.0)
             #print(x.shape)
 
         for module in self:
@@ -151,7 +151,7 @@ class InvertedResidual(nn.Module):
 
 
 class MobileNetV2(nn.Module):
-    def __init__(self, pretrained=True):
+    def __init__(self, pretrained=False):
         """
         MobileNet V2 main class
         Args:
@@ -215,18 +215,23 @@ class MobileNetV2(nn.Module):
         if pretrained:
            self._load_pretrained_model()
 
+        # torch.jit.script(self)
+
     def _forward_impl(self, x):
         # This exists since TorchScript doesn't support inheritance, so the superclass method
         # (this one) needs to have a name other than `forward` that can be accessed in a subclass
+
         fpn_features = []
-        for i, f in enumerate(self.features):
-            if i > self.fpn_selected[-1]:
-                break
+        for i, f in enumerate(self.features): #  len(self.features) -- 14
+            # xxxx8888
+            # if i > self.fpn_selected[-1]:
+            #     break
             x = f(x)
             if i in self.fpn_selected:
                 fpn_features.append(x)
 
         c1, c2, c3, c4, c5 = fpn_features
+
         return c1, c2, c3, c4, c5
 
 
@@ -250,27 +255,25 @@ class MobileV2_MLSD_Large(nn.Module):
 
         self.backbone = MobileNetV2(pretrained=False)
         ## A, B
-        self.block15 = BlockTypeA(in_c1= 64, in_c2= 96,
-                                  out_c1= 64, out_c2=64,
-                                  upscale=False)
+        self.block15 = BlockTypeA(in_c1= 64, in_c2= 96, out_c1= 64, out_c2=64, upscale=False)
         self.block16 = BlockTypeB(128, 64)
 
         ## A, B
-        self.block17 = BlockTypeA(in_c1 = 32,  in_c2 = 64,
-                                  out_c1= 64,  out_c2= 64)
+        self.block17 = BlockTypeA(in_c1 = 32,  in_c2 = 64, out_c1= 64,  out_c2= 64)
         self.block18 = BlockTypeB(128, 64)
 
         ## A, B
-        self.block19 = BlockTypeA(in_c1=24, in_c2=64,
-                                  out_c1=64, out_c2=64)
+        self.block19 = BlockTypeA(in_c1=24, in_c2=64, out_c1=64, out_c2=64)
         self.block20 = BlockTypeB(128, 64)
 
         ## A, B, C
-        self.block21 = BlockTypeA(in_c1=16, in_c2=64,
-                                  out_c1=64, out_c2=64)
+        self.block21 = BlockTypeA(in_c1=16, in_c2=64, out_c1=64, out_c2=64)
         self.block22 = BlockTypeB(128, 64)
 
         self.block23 = BlockTypeC(64, 16)
+
+        # torch.jit.script(self)
+
 
     def forward(self, x):
         c1, c2, c3, c4, c5 = self.backbone(x)

@@ -259,8 +259,7 @@ class MobileV2_MLSD_Large(nn.Module):
 
     def forward(self, x):
         B, C, H, W = x.size()
-        assert B == 1, "only support one batch"
-
+        assert B == 1 and C == 4, "Now only support one batch and rgba channels"
         x = F.interpolate(x, size=(512, 512), mode="bilinear", align_corners=True)
         x = (x - 0.5) * 2.0 # convert x from [0.0, 1.0] to [-1.0, 1.0]
 
@@ -277,45 +276,39 @@ class MobileV2_MLSD_Large(nn.Module):
 
         x = self.block21(c1, x)
         x = self.block22(x)
-        x = self.block23(x)
-        x = x[:, 7:, :, :] # x.size() -- [1, 9, 256, 256]
+        x = self.block23(x) # x.size() -- [1, 16, 256, 256]
+        x = x[:, 7:, :, :]  # x.size() -- [1,  9, 256, 256]
 
         center = x[:, 0, :, :] # size() -- [1, 256, 256]
-        displacement = x[:, 1:5, :, :][0] # size() -- [4, 256, 256]
-        displacement = displacement.permute(1, 2, 0) # ==> [256, 256, 4]        
+        displacement = x[:, 1:5, :, :][0].permute(1, 2, 0) # size() -- [4, 256, 256] ==> [256, 256, 4]
 
         ksize = 3
         heat = torch.sigmoid(center) # size() -- [1, 256, 256]
-        hmax = F.max_pool2d( heat, (ksize, ksize), stride=1, padding=(ksize-1)//2) # size() -- [1, 256, 256]
-        keep = (hmax == heat).float()
-        heat = heat * keep
+        hmax = F.max_pool2d(heat, (ksize, ksize), stride=1, padding=(ksize-1)//2) # size() -- [1, 256, 256]
+        heat = heat * (hmax == heat).float() # keep local maximum
         heat = heat.reshape(-1, ) # size() -- [65535]
+        scores, coords = torch.topk(heat, 200, dim=0, largest=True) # size() -- [topk -- 200]
 
-        topk_n = 200
-        scores, indices = torch.topk(heat, topk_n, dim=-1, largest=True)
-        yy = torch.floor_divide(indices, 256).unsqueeze(-1)
-        xx = torch.fmod(indices, 256).unsqueeze(-1)
-        points = torch.cat((yy, xx),dim=-1)
+        yy = torch.floor_divide(coords, 256)
+        xx = torch.fmod(coords, 256)
 
-        start = displacement[:, :, :2]
-        end = displacement[:, :, 2:]
-        distance_map = torch.sqrt(torch.sum((start - end) ** 2, dim=2))
+        x1y1 = displacement[:, :, :2]
+        x2y2 = displacement[:, :, 2:]
+        distance_map = torch.sqrt(torch.sum((x1y1 - x2y2) ** 2, dim=2)) # size() -- [256, 256]
 
-        h_ratio = H/256.0
+        h_ratio = H/256.0 # orignal heat size -- [1, 256, 256]
         w_ratio = W/256.0
 
         # Setup [0.0, 0.0, 0.0, 0.0] for make sure torch.stack(segment_list, dim = 0) OK !!!
         segment_list: List[torch.Tensor] = [torch.tensor([0.0, 0.0, 0.0, 0.0]).to(x.device)]
-
-        for center, score in zip(points, scores):
-            y, x = center[0], center[1]
-            distance = distance_map[y, x]
-            if score > self.score_threshold and distance > self.distance_threshold:
-                x_start = (x + displacement[y, x, 0]) * w_ratio
-                y_start = (y + displacement[y, x, 1]) * h_ratio
-                x_end = (x + displacement[y, x, 2]) * w_ratio
-                y_end = (y + displacement[y, x, 3]) * h_ratio
-                segment_list.append(torch.stack((x_start, y_start, x_end, y_end), dim=0))
+        for y, x, s in zip(yy, xx, scores):
+            d = distance_map[y, x]
+            if s > self.score_threshold and d > self.distance_threshold:
+                x1 = (x + displacement[y, x, 0]) * w_ratio
+                y1 = (y + displacement[y, x, 1]) * h_ratio
+                x2 = (x + displacement[y, x, 2]) * w_ratio
+                y2 = (y + displacement[y, x, 3]) * h_ratio
+                segment_list.append(torch.stack((x1, y1, x2, y2), dim=0))
 
         lines = torch.stack(segment_list, dim = 0)
 

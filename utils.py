@@ -14,6 +14,32 @@ import numpy as np
 import cv2
 import torch
 from  torch.nn import  functional as F
+import pdb
+
+
+def __output_kv__(prefix, k, v):
+        if isinstance(v, torch.Tensor):
+                print(f"{prefix}tensor [{k}] size:", list(v.size()), ", min:", v.min(), ", max:", v.max())
+        elif isinstance(v, np.ndarray):
+                print(f"{prefix}array [{k}] shape:", v.shape, ", min:", v.min(), ", max:", v.max())
+        elif isinstance(v, list):
+                print(f"{prefix}list [{k}] len:", len(v), ",", v)
+        elif isinstance(v, tuple):
+                print(f"{prefix}tuple [{k}] len:", len(v), ",", v)
+        elif isinstance(v, str):
+                print(f"{prefix}[{k}] value:", "'" + v + "'")
+        else:
+                print(f"{prefix}[{k}] value:", v)
+
+def debug_var(v_name, v_value):
+        if isinstance(v_value, dict):
+                prefix = "    "
+                print(f"{v_name} is dict:")
+                for k, v in v_value.items():
+                        __output_kv__(prefix, k, v)
+        else:
+                prefix = ""
+                __output_kv__(prefix, v_name, v_value)
 
 
 def deccode_output_score_and_ptss(tpMap, topk_n = 200, ksize = 5):
@@ -22,32 +48,47 @@ def deccode_output_score_and_ptss(tpMap, topk_n = 200, ksize = 5):
     center: tpMap[1, 0, :, :]
     displacement: tpMap[1, 1:5, :, :]
     '''
+
     b, c, h, w = tpMap.shape
     assert  b==1, 'only support bsize==1'
-    displacement = tpMap[:, 1:5, :, :][0]
-    center = tpMap[:, 0, :, :]
-    heat = torch.sigmoid(center)
-    hmax = F.max_pool2d( heat, (ksize, ksize), stride=1, padding=(ksize-1)//2)
+
+    # tpMap.size() -- [1, 9, 256, 256]
+
+
+    displacement = tpMap[:, 1:5, :, :][0] # size() -- [4, 256, 256]
+    center = tpMap[:, 0, :, :] # size() -- [1, 256, 256]
+    heat = torch.sigmoid(center) # size() -- [1, 256, 256]
+    hmax = F.max_pool2d( heat, (ksize, ksize), stride=1, padding=(ksize-1)//2) # size() -- [1, 256, 256]
     keep = (hmax == heat).float()
     heat = heat * keep
-    heat = heat.reshape(-1, )
+    heat = heat.reshape(-1, ) # size() -- [65535]
+
 
     scores, indices = torch.topk(heat, topk_n, dim=-1, largest=True)
     yy = torch.floor_divide(indices, w).unsqueeze(-1)
     xx = torch.fmod(indices, w).unsqueeze(-1)
-    ptss = torch.cat((yy, xx),dim=-1)
+    points = torch.cat((yy, xx),dim=-1)
+    points = points.detach().cpu().numpy() # (200, 2)
 
-    ptss   = ptss.detach().cpu().numpy()
-    scores = scores.detach().cpu().numpy()
+    scores = scores.detach().cpu().numpy() # scores.shape -- (200,)
     displacement = displacement.detach().cpu().numpy()
     displacement = displacement.transpose((1,2,0))
-    return  ptss, scores, displacement
+
+    # displacement.shape -- (256, 256, 4)
+
+    return  points, scores, displacement
 
 
 def pred_lines(image, model,
                input_shape=[512, 512],
                score_thr=0.10,
                dist_thr=20.0):
+    # image.shape -- (512, 512, 3), uint8
+    # input_shape = [512, 512]
+    # score_thr = 0.1
+    # dist_thr = 20
+
+
     h, w, _ = image.shape
     h_ratio, w_ratio = [h / input_shape[0], w / input_shape[1]]
 
@@ -59,7 +100,13 @@ def pred_lines(image, model,
     batch_image = (batch_image / 127.5) - 1.0
 
     batch_image = torch.from_numpy(batch_image).float().cuda()
+    # debug_var("batch_image", batch_image)
+    # tensor [batch_image] size: [1, 4, 512, 512] , min: tensor(-1., device='cuda:0') , max: tensor(1., device='cuda:0')
+
     outputs = model(batch_image)
+    # debug_var("outputs", outputs)
+    # tensor [outputs] size: [1, 9, 256, 256] , min: tensor(-109.6107, device='cuda:0', grad_fn=<MinBackward1>) , max: tensor(110.7877, device='cuda:0', grad_fn=<MaxBackward1>)
+
     pts, pts_score, vmap = deccode_output_score_and_ptss(outputs, 200, 3)
     start = vmap[:, :, :2]
     end = vmap[:, :, 2:]
@@ -77,11 +124,14 @@ def pred_lines(image, model,
             y_end = y + disp_y_end
             segments_list.append([x_start, y_start, x_end, y_end])
 
+    # segments_list
+    # [[63.96052932739258, 115.40054321289062, 129.6220474243164, 52.78090476989746], [133.87911796569824, 53.358787536621094, 160.34277248382568, 136.5862045288086], [0.15380024909973145, -2.2335777282714844, 10.219452857971191, 46.72166633605957], [82.98305892944336, 184.6273422241211, 159.89088821411133, 138.7009391784668], [217.50194549560547, -1.0080375671386719, 255.64185905456543, 115.61482620239258], [128.08434009552002, 54.54061508178711, 156.11651706695557, 138.02459335327148], [5.72020149230957, 56.70120620727539, 68.59017562866211, -2.2596569061279297], [63.0891695022583, 116.37055969238281, 82.62580680847168, 185.2315673828125], [8.978767395019531, 56.12278747558594, 47.9438362121582, 256.4754409790039], [64.11561250686646, 115.64535331726074, 75.5780668258667, 162.59560775756836]]
+
     lines = 2 * np.array(segments_list)  # 256 > 512
-    lines[:, 0] = lines[:, 0] * w_ratio
-    lines[:, 1] = lines[:, 1] * h_ratio
-    lines[:, 2] = lines[:, 2] * w_ratio
-    lines[:, 3] = lines[:, 3] * h_ratio
+    lines[:, 0] = lines[:, 0] * w_ratio # x1
+    lines[:, 1] = lines[:, 1] * h_ratio # y1
+    lines[:, 2] = lines[:, 2] * w_ratio # x2
+    lines[:, 3] = lines[:, 3] * h_ratio # y2
 
     return lines
 
